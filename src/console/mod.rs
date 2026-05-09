@@ -1,4 +1,5 @@
 pub mod console;
+mod modals;
 mod state;
 mod views;
 

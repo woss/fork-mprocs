@@ -1,13 +1,16 @@
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::modals::quit_modal::QuitModal;
+use super::modals::{Modal, ModalAction};
 use super::views::term::term_view;
 use crate::color;
+use crate::console::state::{ConsoleState, ConsoleTaskEntry};
 use crate::mprocs::app::{ClientHandle, ClientId};
 use crate::term::grid::BorderType;
 use crate::{
   error::ResultLogger,
   kernel::kernel_message::{
-    KernelCommand, KernelQuery, KernelQueryResponse, SharedVt, TaskContext,
+    KernelCommand, KernelQuery, KernelQueryResponse, TaskContext,
   },
   kernel::task::{
     TaskCmd, TaskDef, TaskId, TaskNotification, TaskNotify, TaskStatus,
@@ -23,13 +26,6 @@ use crate::{
   },
 };
 
-struct ConsoleTaskEntry {
-  id: TaskId,
-  path: String,
-  status: TaskStatus,
-  vt: Option<SharedVt>,
-}
-
 struct Console {
   task_context: TaskContext,
   receiver: UnboundedReceiver<TaskCmd>,
@@ -37,8 +33,7 @@ struct Console {
   grid: Grid,
   screen_size: Size,
 
-  tasks: Vec<ConsoleTaskEntry>,
-  selected: usize,
+  state: ConsoleState,
 }
 
 impl Console {
@@ -88,7 +83,7 @@ impl Console {
         let path = path
           .map(|p| p.to_string())
           .unwrap_or_else(|| format!("<task:{}>", from.0));
-        self.tasks.push(ConsoleTaskEntry {
+        self.state.tasks.push(ConsoleTaskEntry {
           id: from,
           path,
           status,
@@ -97,27 +92,32 @@ impl Console {
         true
       }
       TaskNotify::Started => {
-        if let Some(entry) = self.tasks.iter_mut().find(|t| t.id == from) {
+        if let Some(entry) = self.state.tasks.iter_mut().find(|t| t.id == from)
+        {
           entry.status = TaskStatus::Running;
         }
         true
       }
       TaskNotify::Stopped(_) => {
-        if let Some(entry) = self.tasks.iter_mut().find(|t| t.id == from) {
+        if let Some(entry) = self.state.tasks.iter_mut().find(|t| t.id == from)
+        {
           entry.status = TaskStatus::Down;
         }
         true
       }
       TaskNotify::ScreenChanged(vt) => {
-        if let Some(entry) = self.tasks.iter_mut().find(|t| t.id == from) {
+        if let Some(entry) = self.state.tasks.iter_mut().find(|t| t.id == from)
+        {
           entry.vt = vt;
         }
         true
       }
       TaskNotify::Removed => {
-        self.tasks.retain(|t| t.id != from);
-        if self.selected >= self.tasks.len() && !self.tasks.is_empty() {
-          self.selected = self.tasks.len() - 1;
+        self.state.tasks.retain(|t| t.id != from);
+        if self.state.selected >= self.state.tasks.len()
+          && !self.state.tasks.is_empty()
+        {
+          self.state.selected = self.state.tasks.len() - 1;
         }
         true
       }
@@ -159,6 +159,29 @@ impl Console {
       _ => return false,
     };
 
+    if self.state.quit_modal {
+      let action = QuitModal.handle_key(key, &mut self.state);
+      match action {
+        ModalAction::None => {}
+        ModalAction::Detach => {
+          if let Some(client) =
+            self.clients.iter_mut().find(|c| c.id == client_id)
+          {
+            let _ = client.sender.send(SrvToClt::Quit).await;
+          }
+        }
+        ModalAction::Quit => {
+          if let Some(client) =
+            self.clients.iter_mut().find(|c| c.id == client_id)
+          {
+            self.task_context.send(KernelCommand::Quit);
+            let _ = client.sender.send(SrvToClt::Quit).await;
+          }
+        }
+      }
+      return true;
+    }
+
     match key.code {
       KeyCode::Char('j') | KeyCode::Down if key.mods == KeyMods::NONE => {
         self.move_selection(1);
@@ -169,11 +192,7 @@ impl Console {
         true
       }
       KeyCode::Char('q') if key.mods == KeyMods::NONE => {
-        if let Some(client) =
-          self.clients.iter_mut().find(|c| c.id == client_id)
-        {
-          let _ = client.sender.send(SrvToClt::Quit).await;
-        }
+        self.state.quit_modal = true;
         true
       }
       _ => false,
@@ -181,18 +200,18 @@ impl Console {
   }
 
   fn move_selection(&mut self, delta: i32) {
-    if self.tasks.is_empty() {
+    if self.state.tasks.is_empty() {
       return;
     }
-    let len = self.tasks.len() as i32;
-    let new = (self.selected as i32 + delta).rem_euclid(len);
-    self.selected = new as usize;
+    let len = self.state.tasks.len() as i32;
+    let new = (self.state.selected as i32 + delta).rem_euclid(len);
+    self.state.selected = new as usize;
   }
 
   async fn refresh_tasks(&mut self) {
     let rx = self.task_context.query(KernelQuery::ListTasks(None));
     if let Ok(KernelQueryResponse::TaskList(list)) = rx.await {
-      self.tasks = list
+      self.state.tasks = list
         .into_iter()
         .map(|t| ConsoleTaskEntry {
           id: t.id,
@@ -204,8 +223,10 @@ impl Console {
           vt: None,
         })
         .collect();
-      if self.selected >= self.tasks.len() && !self.tasks.is_empty() {
-        self.selected = self.tasks.len() - 1;
+      if self.state.selected >= self.state.tasks.len()
+        && !self.state.tasks.is_empty()
+      {
+        self.state.selected = self.state.tasks.len() - 1;
       }
     }
   }
@@ -218,8 +239,11 @@ impl Console {
   }
 
   async fn render(&mut self) {
+    let def_attrs =
+      Attrs::default().fg(color!("#e0e0e0")).bg(color!("#111111"));
+
     let grid = &mut self.grid;
-    grid.erase_all(Attrs::default());
+    grid.erase_all(def_attrs);
     grid.cursor_pos = None;
 
     let area = Rect::new(0, 0, self.screen_size.width, self.screen_size.height);
@@ -233,13 +257,13 @@ impl Console {
 
     // Title bar
     let logo_attrs = Attrs::default()
-      .fg(Color::BLACK)
+      .fg(color!("#000000"))
       .bg(color!("#69e8ff"))
       .set_bold(true);
     grid.draw_text(title_row, " dekit ", logo_attrs);
     let bar_attrs = Attrs::default()
       .fg(color!("#69e8ff"))
-      .bg(Color::WHITE)
+      .bg(color!("#d0d0d0"))
       .set_bold(true);
     grid.draw_line(title_row.move_left(7), "\u{e0bc} ", bar_attrs);
 
@@ -247,27 +271,37 @@ impl Console {
     grid.draw_block(
       procs_block,
       &BorderType::Plain.chars(),
-      Attrs::default().fg(color!("#666666")),
+      def_attrs.clone().fg(color!("#666666")),
     );
     grid.draw_text(
       procs_block.move_left(1).move_right(-2),
       " Processes ",
-      Attrs::default().fg(color!("#666666")),
+      def_attrs.clone().fg(color!("#666666")),
     );
-    if self.tasks.is_empty() {
-      let attrs = Attrs::default().fg(Color::Idx(245));
-      grid.draw_text(procs_block.inner((1, 2)), "No tasks", attrs);
+    if self.state.tasks.is_empty() {
+      grid.draw_text(
+        procs_block.inner((1, 2)),
+        "No tasks",
+        def_attrs.clone().fg(color!("#aaaaaa")),
+      );
     } else {
       let area = procs_block.inner(1);
       let max_rows = area.height as usize;
-      let start = scroll_offset(self.selected, self.tasks.len(), max_rows);
+      let start =
+        scroll_offset(self.state.selected, self.state.tasks.len(), max_rows);
 
-      for (i, task) in self.tasks.iter().enumerate().skip(start).take(max_rows)
+      for (i, task) in self
+        .state
+        .tasks
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(max_rows)
       {
         let Some(row) = area.row((i - start) as u16) else {
           break;
         };
-        let is_selected = i == self.selected;
+        let is_selected = i == self.state.selected;
         let bg = if is_selected {
           Color::Idx(236)
         } else {
@@ -294,27 +328,31 @@ impl Console {
     grid.draw_block(
       term_block,
       &BorderType::Thick.chars(),
-      Attrs::default().fg(term_block_fg),
+      def_attrs.clone().fg(term_block_fg),
     );
     grid.draw_text(
       term_block.move_left(1).move_right(-2),
       " Terminal ",
-      Attrs::default().fg(term_block_fg),
+      def_attrs.clone().fg(term_block_fg),
     );
-    if let Some(vt) = self.tasks.get(self.selected).and_then(|t| t.vt.as_ref())
+    if let Some(vt) = self
+      .state
+      .tasks
+      .get(self.state.selected)
+      .and_then(|t| t.vt.as_ref())
     {
       term_view(grid, term_block.inner(1), vt);
     }
 
     // Bottom help bar
-    let help_bg = Attrs::default();
+    let help_bg = def_attrs;
     grid.fill_area(help_row, ' ', help_bg);
     let bindings: &[(&str, &str)] =
       &[("`", "leader"), ("C-h/j/k/l", "select pane")];
     let mut cursor = Rect::new(help_row.x + 1, help_row.y, help_row.width, 1);
-    let key_attrs = Attrs::default().fg(color!("#7da8e8")).set_bold(true);
-    let desc_attrs = Attrs::default().fg(color!("#dddddd"));
-    let sep_attrs = Attrs::default().fg(color!("#888888"));
+    let key_attrs = def_attrs.clone().fg(color!("#7da8e8")).set_bold(true);
+    let desc_attrs = def_attrs.clone().fg(color!("#dddddd"));
+    let sep_attrs = def_attrs.clone().fg(color!("#888888"));
     for (i, (key, desc)) in bindings.into_iter().enumerate() {
       if i > 0 {
         let used = grid.draw_text(cursor, " \u{00b7} ", sep_attrs);
@@ -325,6 +363,10 @@ impl Console {
       cursor.x = used.right();
       let used = grid.draw_text(cursor, &format!(" {}", desc), desc_attrs);
       cursor.x = used.right();
+    }
+
+    if self.state.quit_modal {
+      QuitModal.draw(grid);
     }
 
     // Send diffs to clients
@@ -360,8 +402,11 @@ pub fn create_console_task(pc: &TaskContext) -> TaskId {
           width: 80,
           height: 24,
         },
-        tasks: Vec::new(),
-        selected: 0,
+        state: ConsoleState {
+          tasks: Vec::new(),
+          selected: 0,
+          quit_modal: false,
+        },
       };
       app.run().await;
     },
