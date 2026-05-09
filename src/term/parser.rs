@@ -27,6 +27,12 @@ impl Parser {
     self.screen.set_size(rows, cols);
   }
 
+  /// Clears the screen and scrollback, returning the parser to its initial
+  /// state at the current size.
+  pub fn reset(&mut self) {
+    self.screen.reset();
+  }
+
   /// Scrolls to the given position in the scrollback.
   ///
   /// This position indicates the offset from the top of the screen, and

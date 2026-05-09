@@ -5,7 +5,6 @@ use std::{
   sync::{Arc, RwLock, atomic::AtomicUsize},
 };
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::term::Parser;
@@ -44,7 +43,6 @@ pub enum KernelCommand {
   // Task reporting
   TaskStarted,
   TaskStopped(u32),
-  TaskUpdatedScreen(Option<SharedVt>),
   TaskRendered,
 }
 
@@ -64,11 +62,12 @@ pub enum KernelQueryResponse {
   Screen(Option<String>),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct TaskInfo {
   pub id: TaskId,
   pub path: Option<TaskPath>,
   pub status: TaskStatus,
+  pub vt: Option<SharedVt>,
 }
 
 #[derive(Clone)]

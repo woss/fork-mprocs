@@ -21,7 +21,7 @@ pub struct ProcView {
 
   pub is_up: bool,
   pub exit_code: Option<u32>,
-  pub vt: Option<SharedVt>,
+  pub vt: SharedVt,
   pub copy_mode: CopyMode,
 
   pub target_state: TargetState,
@@ -30,14 +30,14 @@ pub struct ProcView {
 }
 
 impl ProcView {
-  pub fn new(id: TaskId, cfg: ProcConfig) -> Self {
+  pub fn new(id: TaskId, cfg: ProcConfig, vt: SharedVt) -> Self {
     Self {
       id,
       cfg,
 
       is_up: false,
       exit_code: None,
-      vt: None,
+      vt,
       copy_mode: CopyMode::None(None),
 
       target_state: TargetState::None,
@@ -59,12 +59,10 @@ impl ProcView {
   }
 
   pub fn lock_view(&'_ self) -> ProcViewFrame<'_> {
-    match &self.vt {
-      None => ProcViewFrame::Empty,
-      Some(vt) => vt
-        .read()
-        .map_or(ProcViewFrame::Empty, |vt| ProcViewFrame::Vt(vt)),
-    }
+    self
+      .vt
+      .read()
+      .map_or(ProcViewFrame::Empty, |vt| ProcViewFrame::Vt(vt))
   }
 
   pub fn name(&self) -> &str {

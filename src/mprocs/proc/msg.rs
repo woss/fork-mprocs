@@ -1,9 +1,6 @@
 use std::fmt::Debug;
 
-use crate::{
-  kernel::kernel_message::SharedVt,
-  term::{key::Key, mouse::MouseEvent},
-};
+use crate::term::{key::Key, mouse::MouseEvent};
 
 #[derive(Debug)]
 pub enum ProcMsg {
@@ -22,5 +19,4 @@ pub enum ProcMsg {
 pub enum ProcEvent {
   Exited(u32),
   Started,
-  SetVt(Option<SharedVt>),
 }

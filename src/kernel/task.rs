@@ -18,7 +18,6 @@ pub trait Task: Send + 'static {
 pub enum TaskEffect {
   Started,
   Stopped(u32),
-  UpdatedScreen(Option<SharedVt>),
   Rendered,
   Remove,
 }
@@ -36,10 +35,6 @@ impl Effects {
 
   pub fn stopped(&mut self, code: u32) {
     self.0.push(TaskEffect::Stopped(code));
-  }
-
-  pub fn updated_screen(&mut self, vt: Option<SharedVt>) {
-    self.0.push(TaskEffect::UpdatedScreen(vt));
   }
 
   pub fn rendered(&mut self) {
@@ -86,24 +81,22 @@ pub struct TaskNotification {
 
 #[derive(Clone)]
 pub enum TaskNotify {
-  Added(Option<TaskPath>, TaskStatus),
+  Added(Option<TaskPath>, TaskStatus, Option<SharedVt>),
   Started,
   Stopped(u32),
   Rendered,
-  ScreenChanged(Option<SharedVt>),
   Removed,
 }
 
 impl fmt::Debug for TaskNotify {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      TaskNotify::Added(path, status) => {
+      TaskNotify::Added(path, status, _) => {
         write!(f, "Added({:?}, {:?})", path, status)
       }
       TaskNotify::Started => write!(f, "Started"),
       TaskNotify::Stopped(code) => write!(f, "Stopped({})", code),
       TaskNotify::Rendered => write!(f, "Rendered"),
-      TaskNotify::ScreenChanged(_) => write!(f, "ScreenChanged(...)"),
       TaskNotify::Removed => write!(f, "Removed"),
     }
   }
@@ -154,6 +147,7 @@ pub struct TaskDef {
   pub status: TaskStatus,
   pub deps: Vec<TaskId>,
   pub path: Option<TaskPath>,
+  pub vt: Option<SharedVt>,
 }
 
 impl Default for TaskDef {
@@ -163,6 +157,7 @@ impl Default for TaskDef {
       status: TaskStatus::Down,
       deps: Vec::new(),
       path: None,
+      vt: None,
     }
   }
 }

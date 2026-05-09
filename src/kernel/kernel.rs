@@ -76,6 +76,7 @@ impl Kernel {
       TaskContext::new(self.next_task_id.clone(), task_id, self.sender.clone());
     let task = factory(ctx);
     let path = def.path.clone();
+    let vt = def.vt.clone();
     let mut handle = TaskHandle {
       task_id,
       task,
@@ -83,7 +84,7 @@ impl Kernel {
       status: def.status,
       deps: HashMap::new(),
       path: def.path,
-      vt: None,
+      vt: def.vt,
     };
 
     for dep_id in &def.deps {
@@ -108,7 +109,7 @@ impl Kernel {
       }
     }
 
-    self.notify_listeners(task_id, TaskNotify::Added(path, status));
+    self.notify_listeners(task_id, TaskNotify::Added(path, status, vt));
   }
 
   pub async fn run(mut self) {
@@ -213,6 +214,7 @@ impl Kernel {
                     id,
                     path: Some(path),
                     status: handle.status,
+                    vt: handle.vt.clone(),
                   })
                 })
                 .collect();
@@ -246,9 +248,6 @@ impl Kernel {
           if self.quitting && self.is_ready_to_quit() {
             break;
           }
-        }
-        KernelCommand::TaskUpdatedScreen(vt) => {
-          self.apply_effect(msg.from, TaskEffect::UpdatedScreen(vt));
         }
         KernelCommand::TaskRendered => {
           self.apply_effect(msg.from, TaskEffect::Rendered);
@@ -326,13 +325,6 @@ impl Kernel {
           task.status = TaskStatus::Down;
         }
         self.notify_listeners(task_id, TaskNotify::Stopped(exit_code));
-      }
-
-      TaskEffect::UpdatedScreen(vt) => {
-        if let Some(task) = self.tasks.get_mut(&task_id) {
-          task.vt = vt.clone();
-        }
-        self.notify_listeners(task_id, TaskNotify::ScreenChanged(vt));
       }
 
       TaskEffect::Rendered => {

@@ -30,25 +30,24 @@ pub struct ProcTask {
 
 impl ProcTask {
   pub fn spawn(parent: &TaskContext, task_path: TaskPath, spec: ProcessSpec) {
+    let vt = SharedVt::new(Parser::new(24, 80, 1000));
+    let task_vt = vt.clone();
     parent.register_with_id(
       parent.alloc_id(),
       TaskDef {
         stop_on_quit: true,
         path: Some(task_path),
+        vt: Some(vt),
         ..Default::default()
       },
       Box::new(move |ctx| {
         let (worker_tx, worker_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let vt = SharedVt::new(Parser::new(24, 80, 1000));
-
         let worker_ctx = ctx.clone();
-        let worker_vt = vt.clone();
         tokio::spawn(async move {
-          proc_worker(worker_ctx, spec, worker_vt, worker_rx).await;
+          proc_worker(worker_ctx, spec, task_vt, worker_rx).await;
         });
 
-        ctx.send(KernelCommand::TaskUpdatedScreen(Some(vt)));
         ctx.send(KernelCommand::TaskStarted);
 
         Box::new(ProcTask {

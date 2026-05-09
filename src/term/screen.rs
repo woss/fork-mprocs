@@ -137,6 +137,12 @@ impl Screen {
     }
   }
 
+  pub(crate) fn reset(&mut self) {
+    let size = self.grid.size();
+    let scrollback_len = self.grid.scrollback_len();
+    *self = Self::new(size, scrollback_len);
+  }
+
   pub(crate) fn set_size(&mut self, rows: u16, cols: u16) {
     self.grid.set_size(Size {
       height: rows,

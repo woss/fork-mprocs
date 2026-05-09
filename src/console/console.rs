@@ -79,7 +79,7 @@ impl Console {
 
   fn handle_notification(&mut self, from: TaskId, notify: TaskNotify) -> bool {
     match notify {
-      TaskNotify::Added(path, status) => {
+      TaskNotify::Added(path, status, vt) => {
         let path = path
           .map(|p| p.to_string())
           .unwrap_or_else(|| format!("<task:{}>", from.0));
@@ -87,7 +87,7 @@ impl Console {
           id: from,
           path,
           status,
-          vt: None,
+          vt,
         });
         true
       }
@@ -102,13 +102,6 @@ impl Console {
         if let Some(entry) = self.state.tasks.iter_mut().find(|t| t.id == from)
         {
           entry.status = TaskStatus::Down;
-        }
-        true
-      }
-      TaskNotify::ScreenChanged(vt) => {
-        if let Some(entry) = self.state.tasks.iter_mut().find(|t| t.id == from)
-        {
-          entry.vt = vt;
         }
         true
       }
@@ -220,7 +213,7 @@ impl Console {
             .map(|p| p.to_string())
             .unwrap_or_else(|| format!("<task:{}>", t.id.0)),
           status: t.status,
-          vt: None,
+          vt: t.vt,
         })
         .collect();
       if self.state.selected >= self.state.tasks.len()

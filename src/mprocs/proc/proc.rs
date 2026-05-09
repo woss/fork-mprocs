@@ -7,7 +7,7 @@ use tokio::select;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::error::ResultLogger;
-use crate::kernel::kernel_message::{KernelCommand, TaskContext};
+use crate::kernel::kernel_message::{KernelCommand, SharedVt, TaskContext};
 use crate::kernel::task::{TaskCmd, TaskDef, TaskId};
 use crate::kernel::task_path::TaskPath;
 use crate::mprocs::config::ProcConfig;
@@ -33,8 +33,9 @@ pub struct Proc {
 
   name: String,
   stop_signal: StopSignal,
-  scrollback_len: usize,
   log: Option<LogConfig>,
+
+  pub vt: SharedVt,
 
   pub tx: UnboundedSender<ProcEvent>,
 
@@ -55,23 +56,26 @@ pub fn launch_proc(
   path: Option<TaskPath>,
   size: Rect,
 ) -> ProcView {
+  let vt = SharedVt::new(Parser::new(size.height, size.width, cfg.scrollback_len));
   let cfg_ = cfg.clone();
+  let task_vt = vt.clone();
   let child_id = parent_ks.spawn_async_with_id(
     task_id,
     TaskDef {
       stop_on_quit: true,
       deps,
       path,
+      vt: Some(vt.clone()),
       ..Default::default()
     },
     move |ks, cmd_receiver| async move {
       let cfg = cfg_;
       let task_id = ks.task_id;
-      proc_main_loop(ks, task_id, &cfg, size, cmd_receiver).await;
+      proc_main_loop(ks, task_id, &cfg, size, task_vt, cmd_receiver).await;
     },
   );
 
-  ProcView::new(child_id, cfg)
+  ProcView::new(child_id, cfg, vt)
 }
 
 async fn proc_main_loop(
@@ -79,11 +83,12 @@ async fn proc_main_loop(
   task_id: TaskId,
   cfg: &ProcConfig,
   size: Rect,
+  vt: SharedVt,
   mut cmd_receiver: UnboundedReceiver<TaskCmd>,
 ) -> ProcView {
   let (internal_sender, mut internal_receiver) =
     tokio::sync::mpsc::unbounded_channel();
-  let mut proc = Proc::new(task_id, cfg, internal_sender, size).await;
+  let mut proc = Proc::new(task_id, cfg, vt, internal_sender, size).await;
 
   let mut vt_events_buf = Vec::new();
 
@@ -132,9 +137,6 @@ async fn proc_main_loop(
         ProcEvent::Started => {
           ks.send(KernelCommand::TaskStarted);
         }
-        ProcEvent::SetVt(vt) => {
-          ks.send(KernelCommand::TaskUpdatedScreen(vt));
-        }
       },
       NextValue::Internal(None) => (),
       NextValue::Read(Ok(count)) => {
@@ -161,7 +163,7 @@ async fn proc_main_loop(
             writer.flush().await.log_ignore();
           }
 
-          if let Ok(mut vt) = inst.vt.write() {
+          if let Ok(mut vt) = proc.vt.write() {
             vt.screen.process(bytes, &mut vt_events_buf);
             drop(vt);
           }
@@ -171,7 +173,9 @@ async fn proc_main_loop(
                 //
               }
               VtEvent::Reply(s) => {
-                inst.process.write_all(s.as_bytes()).await.log_ignore();
+                if let ProcState::Some(inst) = &mut proc.inst {
+                  inst.process.write_all(s.as_bytes()).await.log_ignore();
+                }
               }
             };
           }
@@ -200,6 +204,7 @@ impl Proc {
   pub async fn new(
     id: TaskId,
     cfg: &ProcConfig,
+    vt: SharedVt,
     tx: UnboundedSender<ProcEvent>,
     area: Rect,
   ) -> Self {
@@ -214,8 +219,9 @@ impl Proc {
 
       name: cfg.name.clone(),
       stop_signal: cfg.stop.clone(),
-      scrollback_len: cfg.scrollback_len,
       log: cfg.log.clone(),
+
+      vt,
 
       tx,
 
@@ -232,13 +238,17 @@ impl Proc {
   async fn spawn_new_inst(&mut self) {
     assert_matches!(self.inst, ProcState::None);
 
+    if let Ok(mut vt) = self.vt.write() {
+      vt.reset();
+      vt.set_size(self.size.height, self.size.width);
+    }
+
     let spawned = Inst::spawn(
       self.id,
       &self.name,
       &self.spec,
       self.tx.clone(),
       &self.size,
-      self.scrollback_len,
       self.log.as_ref(),
     )
     .await;
@@ -287,19 +297,13 @@ impl Proc {
   pub fn lock_vt(
     &self,
   ) -> Option<std::sync::RwLockReadGuard<'_, Parser>> {
-    match &self.inst {
-      ProcState::None => None,
-      ProcState::Some(inst) => inst.vt.read().ok(),
-    }
+    self.vt.read().ok()
   }
 
   pub fn lock_vt_mut(
     &mut self,
   ) -> Option<std::sync::RwLockWriteGuard<'_, Parser>> {
-    match &self.inst {
-      ProcState::None => None,
-      ProcState::Some(inst) => inst.vt.write().ok(),
-    }
+    self.vt.write().ok()
   }
 
   pub async fn kill(&mut self) {
@@ -391,6 +395,9 @@ impl Proc {
   }
 
   pub fn resize(&mut self, size: Size) {
+    if let Ok(mut vt) = self.vt.write() {
+      vt.set_size(size.height, size.width);
+    }
     if let ProcState::Some(inst) = &mut self.inst {
       inst.resize(&size);
     }
@@ -465,7 +472,7 @@ impl Proc {
 
   pub async fn handle_mouse(&mut self, event: MouseEvent) {
     if let ProcState::Some(inst) = &mut self.inst {
-      let mouse_mode = inst.vt.read().unwrap().screen().mouse_protocol_mode();
+      let mouse_mode = self.vt.read().unwrap().screen().mouse_protocol_mode();
       let seq = match mouse_mode {
         MouseProtocolMode::None => String::new(),
         MouseProtocolMode::Press => match event.kind {

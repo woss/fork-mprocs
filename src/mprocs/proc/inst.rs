@@ -3,7 +3,6 @@ use std::fmt::Debug;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::error::ResultLogger;
-use crate::kernel::kernel_message::SharedVt;
 use crate::kernel::task::TaskId;
 use crate::mprocs::proc_log_config::{LogConfig, LogMode};
 use crate::process::process::Process as _;
@@ -15,7 +14,6 @@ use super::msg::ProcEvent;
 use super::Size;
 
 pub struct Inst {
-  pub vt: SharedVt,
   pub log_writer: Option<tokio::fs::File>,
 
   pub pid: u32,
@@ -41,14 +39,8 @@ impl Inst {
     spec: &ProcessSpec,
     tx: UnboundedSender<ProcEvent>,
     size: &Size,
-    scrollback_len: usize,
     log: Option<&LogConfig>,
   ) -> anyhow::Result<Self> {
-    let vt = crate::term::Parser::new(size.height, size.width, scrollback_len);
-    let vt = SharedVt::new(vt);
-
-    tx.send(ProcEvent::SetVt(Some(vt.clone()))).log_ignore();
-
     #[cfg(unix)]
     let process = {
       crate::process::unix_process::UnixProcess::spawn(
@@ -123,7 +115,6 @@ impl Inst {
     tx.send(ProcEvent::Started).log_ignore();
 
     let inst = Inst {
-      vt,
       log_writer,
 
       process,
@@ -135,9 +126,6 @@ impl Inst {
   }
 
   pub fn resize(&mut self, size: &Size) {
-    let rows = size.height;
-    let cols = size.width;
-
     self
       .process
       .resize(Winsize {
@@ -147,9 +135,5 @@ impl Inst {
         y_px: 0,
       })
       .log_ignore();
-
-    if let Ok(mut vt) = self.vt.write() {
-      vt.set_size(rows, cols);
-    }
   }
 }

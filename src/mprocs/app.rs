@@ -377,25 +377,18 @@ impl App {
 
             proc.copy_mode = match std::mem::take(&mut proc.copy_mode) {
               CopyMode::None(pos) => {
-                let mouse_mode = proc
-                  .vt
-                  .as_ref()
-                  .map(|vt| vt.read().unwrap().screen().mouse_protocol_mode())
-                  .unwrap_or_default();
+                let mouse_mode =
+                  proc.vt.read().unwrap().screen().mouse_protocol_mode();
 
                 match mouse_mode {
                   MouseProtocolMode::None => match local_event.kind {
                     MouseEventKind::Down(btn) => match btn {
                       MouseButton::Left => {
-                        if let Some(vt_ref) = proc.vt.as_mut() {
-                          let vt = vt_ref.read().log_get().unwrap();
-                          CopyMode::None(Some(
-                            local_event
-                              .pos_with_scrollback(vt.screen().scrollback()),
-                          ))
-                        } else {
-                          CopyMode::None(pos)
-                        }
+                        let vt = proc.vt.read().log_get().unwrap();
+                        CopyMode::None(Some(
+                          local_event
+                            .pos_with_scrollback(vt.screen().scrollback()),
+                        ))
                       }
                       MouseButton::Right | MouseButton::Middle => {
                         CopyMode::None(pos)
@@ -403,32 +396,26 @@ impl App {
                     },
                     MouseEventKind::Up(_) => CopyMode::None(pos),
                     MouseEventKind::Drag(MouseButton::Left) => {
-                      if let Some(vt_ref) = proc.vt.as_mut() {
-                        let vt = vt_ref.read().log_get().unwrap();
-                        let new_pos = local_event
-                          .pos_with_scrollback(vt.screen().scrollback());
-                        CopyMode::Active(
-                          vt.screen().clone(),
-                          pos.unwrap_or_default(),
-                          Some(new_pos),
-                        )
-                      } else {
-                        CopyMode::None(pos)
-                      }
+                      let vt = proc.vt.read().log_get().unwrap();
+                      let new_pos = local_event
+                        .pos_with_scrollback(vt.screen().scrollback());
+                      CopyMode::Active(
+                        vt.screen().clone(),
+                        pos.unwrap_or_default(),
+                        Some(new_pos),
+                      )
                     }
                     MouseEventKind::Drag(_) => CopyMode::None(pos),
                     MouseEventKind::Moved => CopyMode::None(pos),
                     MouseEventKind::ScrollDown => {
-                      if let Some(vt_ref) = proc.vt.as_mut() {
-                        let mut vt = vt_ref.write().log_get().unwrap();
+                      if let Some(mut vt) = proc.vt.write().log_get() {
                         vt.screen
                           .scroll_screen_down(proc.cfg.mouse_scroll_speed);
                       }
                       CopyMode::None(pos)
                     }
                     MouseEventKind::ScrollUp => {
-                      if let Some(vt_ref) = proc.vt.as_mut() {
-                        let mut vt = vt_ref.write().log_get().unwrap();
+                      if let Some(mut vt) = proc.vt.write().log_get() {
                         vt.screen.scroll_screen_up(proc.cfg.mouse_scroll_speed);
                       }
                       CopyMode::None(pos)
@@ -844,11 +831,9 @@ impl App {
 
       AppEvent::CopyModeEnter => {
         if let Some(proc) = self.state.get_current_proc_mut() {
-          if let Some(vt_ref) = proc.vt.as_ref() {
-            let screen = vt_ref.read().unwrap().screen().clone();
-            let y = (screen.size().height - 1) as i32;
-            proc.copy_mode = CopyMode::Active(screen, Pos { y, x: 0 }, None);
-          }
+          let screen = proc.vt.read().unwrap().screen().clone();
+          let y = (screen.size().height - 1) as i32;
+          proc.copy_mode = CopyMode::Active(screen, Pos { y, x: 0 }, None);
           self.state.scope = Scope::Term;
           loop_action.render();
         };
@@ -973,7 +958,7 @@ impl App {
     notify: TaskNotify,
   ) {
     match notify {
-      TaskNotify::Added(_, _) => {}
+      TaskNotify::Added(_, _, _) => {}
       TaskNotify::Started => {
         if let Some(proc) = self.state.get_proc_mut(task_id) {
           proc.is_up = true;
@@ -1035,13 +1020,6 @@ impl App {
             }
           }
 
-          loop_action.render();
-        }
-      }
-      TaskNotify::ScreenChanged(vt) => {
-        if let Some(proc) = self.state.get_proc_mut(task_id) {
-          proc.vt = vt;
-          proc.changed = true;
           loop_action.render();
         }
       }
