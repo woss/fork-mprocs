@@ -7,13 +7,13 @@ use rquickjs::CatchResultExt;
 use crate::mprocs::app::{ClientHandle, ClientId};
 use crate::{
   client::client_main,
+  console::create_console_task,
   daemon::{
     lockfile,
     receiver::MsgReceiver,
     sender::MsgSender,
     socket::{bind_server_socket, connect_client_socket},
   },
-  console::create_console_task,
   js::js_vm::JsVm,
   kernel::{
     kernel::Kernel,
@@ -63,6 +63,8 @@ async fn run_server(working_dir: PathBuf) -> anyhow::Result<()> {
   let app_task_id = create_console_task(&pc);
   let app_sender = pc.get_task_sender(app_task_id);
 
+  spawn_configured_procs(&pc, &working_dir);
+
   tokio::spawn(async move {
     let mut last_client_id = 0;
 
@@ -107,6 +109,53 @@ async fn run_server(working_dir: PathBuf) -> anyhow::Result<()> {
   crate::process::unix_processes_waiter::UnixProcessesWaiter::uninit()?;
 
   Ok(())
+}
+
+fn print_task_list(resp: DkResponse) {
+  match resp {
+    DkResponse::TaskList(tasks) => {
+      if tasks.is_empty() {
+        println!("No tasks.");
+      } else {
+        for t in &tasks {
+          println!("{}\t{}", t.path, t.status);
+        }
+      }
+    }
+    DkResponse::Error(e) => eprintln!("Error: {}", e),
+    _ => eprintln!("Unexpected response"),
+  }
+}
+
+fn spawn_configured_procs(pc: &TaskContext, working_dir: &Path) {
+  let config = match crate::config::Config::load(working_dir) {
+    Ok(cfg) => cfg,
+    Err(err) => {
+      log::warn!("Failed to load config: {}", err);
+      return;
+    }
+  };
+  for proc in &config.procs {
+    let path = match TaskPath::new(&format!("/{}", proc.name)) {
+      Ok(p) => p,
+      Err(err) => {
+        log::warn!("Invalid proc name {:?}: {}", proc.name, err);
+        continue;
+      }
+    };
+    if proc.cmd.is_empty() {
+      log::warn!("Proc {:?} has empty cmd; skipping", proc.name);
+      continue;
+    }
+    let mut spec =
+      crate::process::process_spec::ProcessSpec::from_argv(proc.cmd.clone());
+    if let Some(cwd) = &proc.cwd {
+      spec.cwd(cwd);
+    } else {
+      spec.cwd(working_dir.to_string_lossy());
+    }
+    crate::task::proc_task::ProcTask::spawn(pc, path, spec);
+  }
 }
 
 /// Dispatch an accepted connection: RPC or TUI.
@@ -361,19 +410,7 @@ pub async fn dekit_main() -> anyhow::Result<()> {
       let glob = sub_m.get_one::<String>("glob").cloned();
       let resp =
         rpc_request(&working_dir, DkRequest::Ls { glob }, false).await?;
-      match resp {
-        DkResponse::TaskList(tasks) => {
-          if tasks.is_empty() {
-            println!("No tasks.");
-          } else {
-            for t in &tasks {
-              println!("{}\t{}", t.path, t.status);
-            }
-          }
-        }
-        DkResponse::Error(e) => eprintln!("Error: {}", e),
-        _ => eprintln!("Unexpected response"),
-      }
+      print_task_list(resp);
     }
     Some(("start", sub_m)) => {
       let working_dir = std::env::current_dir()?;
@@ -439,25 +476,9 @@ pub async fn dekit_main() -> anyhow::Result<()> {
     }
     Some(("up", _sub_m)) => {
       let working_dir = std::env::current_dir()?;
-      let config = crate::config::Config::load(&working_dir)?;
-      if config.procs.is_empty() {
-        println!("No procs in dekit.yaml.");
-      } else {
-        for proc in &config.procs {
-          let path = format!("/{}", proc.name);
-          let req = DkRequest::Spawn {
-            path: path.clone(),
-            cmd: proc.cmd.clone(),
-            cwd: proc.cwd.clone(),
-          };
-          let resp = rpc_request(&working_dir, req, true).await?;
-          match resp {
-            DkResponse::Ok => println!("Spawned {}.", path),
-            DkResponse::Error(e) => eprintln!("Error spawning {}: {}", path, e),
-            _ => eprintln!("Unexpected response for {}", path),
-          }
-        }
-      }
+      let resp =
+        rpc_request(&working_dir, DkRequest::Ls { glob: None }, true).await?;
+      print_task_list(resp);
     }
     Some(("down", _sub_m)) => {
       let working_dir = std::env::current_dir()?;
