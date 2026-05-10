@@ -12,7 +12,7 @@ pub fn draw_frame(grid: &mut Grid, area: Rect, title: &str, focused: bool) {
   } else {
     (BorderType::Plain.chars(), color!("#666666"))
   };
-  let attrs = Attrs::default().fg(fg);
+  let attrs = Attrs::default().fg(fg).bg(color!("#111111"));
   grid.draw_block(area, &border, attrs);
   grid.draw_text(area.move_left(1).move_right(-2), title, attrs);
 }

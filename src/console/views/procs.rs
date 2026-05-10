@@ -3,7 +3,6 @@ use crate::console::state::ConsoleState;
 use crate::console::views::frame::draw_frame;
 use crate::console::views::pane::Pane;
 use crate::kernel::task::TaskStatus;
-use crate::term::Color;
 use crate::term::Grid;
 use crate::term::attrs::Attrs;
 use crate::term::grid::Rect;
@@ -43,23 +42,27 @@ impl Pane for ProcsPane {
       };
       let is_selected = i == state.selected;
       let bg = if is_selected {
-        Color::Idx(236)
+        color!("#303030")
       } else {
-        Color::Default
+        color!("#111111")
       };
 
       let (status_col, path_col) = row.split_v(2);
 
       let (status_char, status_color) = match task.status {
-        TaskStatus::Running => ("●", Color::GREEN),
-        TaskStatus::Down => ("○", Color::RED),
+        TaskStatus::Running => ("●", color!("#4ec55e")),
+        TaskStatus::Down => ("○", color!("#e05a5a")),
       };
       grid.draw_line(
         status_col,
         status_char,
         Attrs::default().fg(status_color).bg(bg),
       );
-      grid.draw_line(path_col, &task.path, Attrs::default().bg(bg));
+      grid.draw_line(
+        path_col,
+        &task.path,
+        Attrs::default().fg(color!("#e0e0e0")).bg(bg),
+      );
     }
   }
 }

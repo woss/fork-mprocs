@@ -1,9 +1,9 @@
 use crate::color;
 use crate::console::state::ConsoleState;
+use crate::term::Grid;
 use crate::term::attrs::Attrs;
 use crate::term::grid::{BorderType, Pos, Rect};
 use crate::term::key::Key;
-use crate::term::{Color, Grid};
 
 pub struct ModalChoice {
   pub key: char,
@@ -36,7 +36,8 @@ pub trait Modal {
     grid.fill_area(modal_rect.inner(1), ' ', Attrs::default().bg(bg));
     grid.draw_block(modal_rect, &BorderType::Plain.chars(), border_attrs);
 
-    let title_attrs = Attrs::default().fg(Color::WHITE).bg(bg).set_bold(true);
+    let title_attrs =
+      Attrs::default().fg(color!("#e0e0e0")).bg(bg).set_bold(true);
     let title_area = Rect::new(x + 2, y + 1, width - 4, 1);
     grid.draw_text(title_area, self.title(), title_attrs);
 
