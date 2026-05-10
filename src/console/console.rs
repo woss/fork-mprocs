@@ -1,12 +1,13 @@
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::layout::{Dir, Layout, PaneId, SizeSpec};
 use super::modals::quit_modal::QuitModal;
 use super::modals::{Modal, ModalAction};
-use super::views::term::term_view;
+use super::views::procs::ProcsPane;
+use super::views::term::TermPane;
 use crate::color;
 use crate::console::state::{ConsoleState, ConsoleTaskEntry};
 use crate::mprocs::app::{ClientHandle, ClientId};
-use crate::term::grid::BorderType;
 use crate::{
   error::ResultLogger,
   kernel::kernel_message::{
@@ -18,11 +19,10 @@ use crate::{
   protocol::{CltToSrv, SrvToClt},
   server::server_message::ServerMessage,
   term::{
-    Color, Grid, Size, TermEvent,
+    Grid, Size, TermEvent,
     attrs::Attrs,
     grid::Rect,
     key::{KeyCode, KeyEventKind, KeyMods},
-    scroll_offset,
   },
 };
 
@@ -32,6 +32,8 @@ struct Console {
   clients: Vec<ClientHandle>,
   grid: Grid,
   screen_size: Size,
+  layout: Layout,
+  focused_pane: PaneId,
 
   state: ConsoleState,
 }
@@ -114,7 +116,7 @@ impl Console {
         }
         true
       }
-      _ => false,
+      TaskNotify::Rendered => true,
     }
   }
 
@@ -175,6 +177,9 @@ impl Console {
       return true;
     }
 
+    let nav_mods = key.mods == KeyMods::CONTROL
+      || key.mods == KeyMods::CONTROL | KeyMods::ALT;
+
     match key.code {
       KeyCode::Char('j') | KeyCode::Down if key.mods == KeyMods::NONE => {
         self.move_selection(1);
@@ -184,12 +189,26 @@ impl Console {
         self.move_selection(-1);
         true
       }
+      KeyCode::Char('h') if nav_mods => self.focus_neighbor(Dir::Left),
+      KeyCode::Char('j') if nav_mods => self.focus_neighbor(Dir::Down),
+      KeyCode::Char('k') if nav_mods => self.focus_neighbor(Dir::Up),
+      KeyCode::Char('l') if nav_mods => self.focus_neighbor(Dir::Right),
       KeyCode::Char('q') if key.mods == KeyMods::NONE => {
         self.state.quit_modal = true;
         true
       }
       _ => false,
     }
+  }
+
+  fn focus_neighbor(&mut self, dir: Dir) -> bool {
+    if let Some(next) = self.layout.neighbor(self.focused_pane, dir) {
+      if next != self.focused_pane {
+        self.focused_pane = next;
+        return true;
+      }
+    }
+    false
   }
 
   fn move_selection(&mut self, delta: i32) {
@@ -245,8 +264,7 @@ impl Console {
     }
 
     let (title_row, area) = area.split_h(1);
-    let (area, help_row) = area.split_h(area.height - 1);
-    let (procs_block, term_block) = area.split_v(30);
+    let (body, help_row) = area.split_h(area.height - 1);
 
     // Title bar
     let logo_attrs = Attrs::default()
@@ -260,81 +278,21 @@ impl Console {
       .set_bold(true);
     grid.draw_line(title_row.move_left(7), "\u{e0bc} ", bar_attrs);
 
-    // Task list
-    grid.draw_block(
-      procs_block,
-      &BorderType::Plain.chars(),
-      def_attrs.clone().fg(color!("#666666")),
-    );
-    grid.draw_text(
-      procs_block.move_left(1).move_right(-2),
-      " Processes ",
-      def_attrs.clone().fg(color!("#666666")),
-    );
-    if self.state.tasks.is_empty() {
-      grid.draw_text(
-        procs_block.inner((1, 2)),
-        "No tasks",
-        def_attrs.clone().fg(color!("#aaaaaa")),
+    self.layout.resize(body.size());
+    let geometry = self.layout.render();
+    for (id, local) in geometry {
+      let area = Rect::new(
+        body.x + local.x,
+        body.y + local.y,
+        local.width,
+        local.height,
       );
-    } else {
-      let area = procs_block.inner(1);
-      let max_rows = area.height as usize;
-      let start =
-        scroll_offset(self.state.selected, self.state.tasks.len(), max_rows);
-
-      for (i, task) in self
-        .state
-        .tasks
-        .iter()
-        .enumerate()
-        .skip(start)
-        .take(max_rows)
-      {
-        let Some(row) = area.row((i - start) as u16) else {
-          break;
-        };
-        let is_selected = i == self.state.selected;
-        let bg = if is_selected {
-          Color::Idx(236)
-        } else {
-          Color::Default
-        };
-
-        let (status_col, path_col) = row.split_v(2);
-
-        let (status_char, status_color) = match task.status {
-          TaskStatus::Running => ("●", Color::GREEN),
-          TaskStatus::Down => ("○", Color::RED),
-        };
-        grid.draw_line(
-          status_col,
-          status_char,
-          Attrs::default().fg(status_color).bg(bg),
-        );
-        grid.draw_line(path_col, &task.path, Attrs::default().bg(bg));
-      }
-    }
-
-    // Terminal
-    let term_block_fg = color!("#bee6f4");
-    grid.draw_block(
-      term_block,
-      &BorderType::Thick.chars(),
-      def_attrs.clone().fg(term_block_fg),
-    );
-    grid.draw_text(
-      term_block.move_left(1).move_right(-2),
-      " Terminal ",
-      def_attrs.clone().fg(term_block_fg),
-    );
-    if let Some(vt) = self
-      .state
-      .tasks
-      .get(self.state.selected)
-      .and_then(|t| t.vt.as_ref())
-    {
-      term_view(grid, term_block.inner(1), vt);
+      self.layout.pane_mut(id).render(
+        grid,
+        area,
+        &mut self.state,
+        id == self.focused_pane,
+      );
     }
 
     // Bottom help bar
@@ -380,21 +338,27 @@ pub fn create_console_task(pc: &TaskContext) -> TaskId {
     },
     |pc, receiver| async move {
       log::debug!("Creating console task (id: {})", pc.task_id.0);
+      let initial_size = Size {
+        width: 80,
+        height: 24,
+      };
+      let mut layout = Layout::new(initial_size);
+      let root = layout.root();
+      let procs_pane = layout.insert(
+        root,
+        Dir::Right,
+        Box::new(ProcsPane),
+        SizeSpec::Fixed(30),
+      );
+      layout.insert(root, Dir::Right, Box::new(TermPane), SizeSpec::Fill);
       let app = Console {
         task_context: pc,
         receiver,
         clients: Vec::new(),
-        grid: Grid::new(
-          Size {
-            width: 80,
-            height: 24,
-          },
-          0,
-        ),
-        screen_size: Size {
-          width: 80,
-          height: 24,
-        },
+        grid: Grid::new(initial_size, 0),
+        screen_size: initial_size,
+        layout,
+        focused_pane: procs_pane,
         state: ConsoleState {
           tasks: Vec::new(),
           selected: 0,
