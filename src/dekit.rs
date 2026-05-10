@@ -29,26 +29,17 @@ use crate::{
   term::Size,
 };
 
-async fn run_server(working_dir: PathBuf) -> anyhow::Result<()> {
-  let _logger = {
-    let logger_str = if cfg!(debug_assertions) {
-      "debug"
-    } else {
-      "warn"
-    };
-    let logger = flexi_logger::Logger::try_with_str(logger_str)
-      .unwrap()
-      .log_to_file(flexi_logger::FileSpec::default().suppress_timestamp())
-      .append()
-      .duplicate_to_stdout(flexi_logger::Duplicate::All);
-
-    std::panic::set_hook(Box::new(|info| {
-      let stacktrace = std::backtrace::Backtrace::capture();
-      log::error!("Got panic. @info:{}\n@stackTrace:{}", info, stacktrace);
-    }));
-
-    logger.use_utc().start().unwrap()
-  };
+async fn run_server(
+  working_dir: PathBuf,
+  log_level: Option<&str>,
+) -> anyhow::Result<()> {
+  let _logger = crate::logging::init(crate::logging::Config {
+    binary: "dk",
+    cli_level: log_level,
+    log_env: "DK_LOG",
+    file_env: "DK_LOG_FILE",
+    default_dir: Some(&working_dir),
+  })?;
 
   // Create lock file and acquire exclusive flock.
   let lock_guard = lockfile::create_lock_file(&working_dir)?;
@@ -360,12 +351,18 @@ pub async fn dekit_main() -> anyhow::Result<()> {
         .about("Print the current screen of a task")
         .arg(Arg::new("path").required(true).help("Task path")),
       Command::new("server").subcommands([
-        Command::new("run").arg(
-          Arg::new("dir")
-            .long("dir")
-            .required(true)
-            .help("Working directory this daemon manages"),
-        ),
+        Command::new("run")
+          .arg(
+            Arg::new("dir")
+              .long("dir")
+              .required(true)
+              .help("Working directory this daemon manages"),
+          )
+          .arg(
+            Arg::new("log-level")
+              .long("log-level")
+              .help("Diagnostic log level (off|error|warn|info|debug|trace, or env_logger spec). Falls back to $DK_LOG, $RUST_LOG, then 'error' (release) or 'trace' (debug)."),
+          ),
         Command::new("start")
           .about("Start the daemon for the current directory"),
         Command::new("stop").about("Stop the daemon for the current directory"),
@@ -488,7 +485,9 @@ pub async fn dekit_main() -> anyhow::Result<()> {
     Some(("server", sub_m)) => match sub_m.subcommand() {
       Some(("run", run_m)) => {
         let dir = run_m.get_one::<String>("dir").unwrap();
-        run_server(PathBuf::from(dir)).await?;
+        let log_level =
+          run_m.get_one::<String>("log-level").map(String::as_str);
+        run_server(PathBuf::from(dir), log_level).await?;
       }
       Some(("start", _sub_m)) => {
         let working_dir = std::env::current_dir()?;

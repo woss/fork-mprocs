@@ -11,7 +11,7 @@ use crate::daemon::{receiver::MsgReceiver, sender::MsgSender};
 #[cfg(unix)]
 use crate::error::ResultLogger;
 use crate::kernel::kernel::Kernel;
-use crate::mprocs::app::{client_loop, create_app_task, ClientId};
+use crate::mprocs::app::{ClientId, client_loop, create_app_task};
 use crate::mprocs::config::{
   CmdConfig, Config, ConfigContext, ProcConfig, ServerConfig,
 };
@@ -24,29 +24,9 @@ use crate::mprocs::proc::StopSignal;
 use crate::mprocs::proc_log_config::{LogConfig, LogMode};
 use crate::mprocs::settings::Settings;
 use crate::mprocs::yaml_val::Val;
-use anyhow::{bail, Result};
-use clap::{arg, command, ArgMatches};
-use flexi_logger::{FileSpec, LoggerHandle};
+use anyhow::{Result, bail};
+use clap::{ArgMatches, arg, command};
 use serde_yaml::Value;
-
-fn setup_logger() -> LoggerHandle {
-  let logger_str = if cfg!(debug_assertions) {
-    "debug"
-  } else {
-    "warn"
-  };
-  let logger = flexi_logger::Logger::try_with_str(logger_str)
-    .unwrap()
-    .log_to_file(FileSpec::default().suppress_timestamp())
-    .append();
-
-  std::panic::set_hook(Box::new(|info| {
-    let stacktrace = std::backtrace::Backtrace::capture();
-    log::error!("Got panic. @info:{}\n@stackTrace:{}", info, stacktrace);
-  }));
-
-  logger.use_utc().start().unwrap()
-}
 
 pub async fn mprocs_main() -> anyhow::Result<()> {
   match run_app().await {
@@ -80,6 +60,7 @@ async fn run_app() -> anyhow::Result<()> {
       arg!(--"log-mode" [MODE] "Process log file mode: append or truncate")
         .value_parser(["append", "truncate"]),
     )
+    .arg(arg!(--"log-level" [SPEC] "Diagnostic log level (off|error|warn|info|debug|trace, or env_logger spec). Falls back to $MPROCS_LOG, $RUST_LOG, then 'error' (release) or 'trace' (debug)."))
     .arg(arg!([COMMANDS]... "Commands to run (if omitted, commands from config will be run)"))
     .get_matches();
 
@@ -223,7 +204,13 @@ async fn run_app() -> anyhow::Result<()> {
       bail!("Unexpected command: {}", cmd);
     }
     None => {
-      let logger = setup_logger();
+      let logger = crate::logging::init(crate::logging::Config {
+        binary: "mprocs",
+        cli_level: matches.get_one::<String>("log-level").map(String::as_str),
+        log_env: "MPROCS_LOG",
+        file_env: "MPROCS_LOG_FILE",
+        default_dir: None,
+      })?;
 
       let (srv_to_clt_sender, srv_to_clt_receiver) = {
         let (reader, writer) = tokio::io::simplex(8 * 1024);

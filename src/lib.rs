@@ -8,6 +8,7 @@ pub mod dekit;
 mod error;
 mod js;
 mod kernel;
+mod logging;
 mod lualib;
 pub mod mprocs;
 mod process;
